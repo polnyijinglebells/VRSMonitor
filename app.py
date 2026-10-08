@@ -12,6 +12,7 @@ import mimetypes
 import os
 import secrets
 import sqlite3
+import ssl
 import sys
 import threading
 import time
@@ -55,6 +56,7 @@ DEFAULT_CONFIG = {
 config_lock = threading.RLock()
 poll_now = threading.Event()
 stop_event = threading.Event()
+_telegram_ssl_context: ssl.SSLContext | None = None
 
 
 def load_config() -> dict[str, Any]:
@@ -524,6 +526,33 @@ def normalize_telegram_chat(value: str) -> str:
     return chat
 
 
+def telegram_ssl_context() -> ssl.SSLContext:
+    """Build a verified TLS context enriched with the Windows trusted stores."""
+    global _telegram_ssl_context
+    if _telegram_ssl_context is not None:
+        return _telegram_ssl_context
+    context = ssl.create_default_context()
+    if sys.platform == "win32" and hasattr(ssl, "enum_certificates"):
+        loaded: set[bytes] = set()
+        for store_name in ("ROOT", "CA"):
+            try:
+                certificates = ssl.enum_certificates(store_name)
+            except OSError:
+                logging.warning("Не удалось прочитать хранилище сертификатов Windows: %s", store_name)
+                continue
+            for certificate, encoding, _trust in certificates:
+                if encoding != "x509_asn" or certificate in loaded:
+                    continue
+                try:
+                    context.load_verify_locations(cadata=ssl.DER_cert_to_PEM_cert(certificate))
+                    loaded.add(certificate)
+                except (ValueError, ssl.SSLError):
+                    continue
+        logging.info("Для Telegram загружено доверенных сертификатов Windows: %s", len(loaded))
+    _telegram_ssl_context = context
+    return context
+
+
 def last_completed_shift_date(now: datetime, shift_hour: int) -> str:
     today_boundary = now.replace(hour=shift_hour, minute=0, second=0, microsecond=0)
     completed_end = today_boundary if now >= today_boundary else today_boundary - timedelta(days=1)
@@ -602,7 +631,7 @@ def send_military_report(cfg: dict[str, Any], shift_date: str | None = None) -> 
         payload = json.dumps({"chat_id": chat, "text": message, "disable_web_page_preview": True}).encode("utf-8")
         request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "VRS-Monitor/1.0"})
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urllib.request.urlopen(request, timeout=20, context=telegram_ssl_context()) as response:
                 result = json.loads(response.read().decode("utf-8"))
                 if response.status >= 300 or not result.get("ok"):
                     raise RuntimeError(result.get("description") or f"Telegram HTTP {response.status}")

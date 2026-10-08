@@ -134,6 +134,12 @@ class MonitorTests(unittest.TestCase):
     def test_telegram_link_is_normalized_to_channel_username(self):
         self.assertEqual(app.normalize_telegram_chat("https://t.me/polnyijinglebell5"), "@polnyijinglebell5")
 
+    def test_telegram_ssl_context_keeps_certificate_verification_enabled(self):
+        app._telegram_ssl_context = None
+        context = app.telegram_ssl_context()
+        self.assertEqual(context.verify_mode, app.ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+
 
 if __name__ == "__main__":
     unittest.main()
