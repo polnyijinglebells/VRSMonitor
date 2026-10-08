@@ -51,12 +51,13 @@ DEFAULT_CONFIG = {
     "military_report_enabled": False,
     "military_report_time": "08:05",
     "military_report_chat": "@polnyijinglebell5",
+    "telegram_allow_self_signed": False,
 }
 
 config_lock = threading.RLock()
 poll_now = threading.Event()
 stop_event = threading.Event()
-_telegram_ssl_context: ssl.SSLContext | None = None
+_telegram_ssl_contexts: dict[bool, ssl.SSLContext] = {}
 
 
 def load_config() -> dict[str, Any]:
@@ -82,6 +83,7 @@ def save_config(changes: dict[str, Any]) -> dict[str, Any]:
     cfg["listen_port"] = max(1, min(65535, int(cfg["listen_port"])))
     cfg["health_mode"] = "http" if cfg.get("health_mode") == "http" else "messages"
     cfg["military_report_enabled"] = bool(cfg.get("military_report_enabled"))
+    cfg["telegram_allow_self_signed"] = bool(cfg.get("telegram_allow_self_signed"))
     report_time = str(cfg.get("military_report_time", "08:05"))
     try:
         datetime.strptime(report_time, "%H:%M")
@@ -526,11 +528,15 @@ def normalize_telegram_chat(value: str) -> str:
     return chat
 
 
-def telegram_ssl_context() -> ssl.SSLContext:
+def telegram_ssl_context(allow_self_signed: bool = False) -> ssl.SSLContext:
     """Build a verified TLS context enriched with the Windows trusted stores."""
-    global _telegram_ssl_context
-    if _telegram_ssl_context is not None:
-        return _telegram_ssl_context
+    if allow_self_signed:
+        if True not in _telegram_ssl_contexts:
+            # Explicit opt-in, scoped exclusively to Telegram report requests.
+            _telegram_ssl_contexts[True] = ssl._create_unverified_context()
+        return _telegram_ssl_contexts[True]
+    if False in _telegram_ssl_contexts:
+        return _telegram_ssl_contexts[False]
     context = ssl.create_default_context()
     if sys.platform == "win32" and hasattr(ssl, "enum_certificates"):
         loaded: set[bytes] = set()
@@ -549,7 +555,7 @@ def telegram_ssl_context() -> ssl.SSLContext:
                 except (ValueError, ssl.SSLError):
                     continue
         logging.info("Для Telegram загружено доверенных сертификатов Windows: %s", len(loaded))
-    _telegram_ssl_context = context
+    _telegram_ssl_contexts[False] = context
     return context
 
 
@@ -631,7 +637,10 @@ def send_military_report(cfg: dict[str, Any], shift_date: str | None = None) -> 
         payload = json.dumps({"chat_id": chat, "text": message, "disable_web_page_preview": True}).encode("utf-8")
         request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "VRS-Monitor/1.0"})
         try:
-            with urllib.request.urlopen(request, timeout=20, context=telegram_ssl_context()) as response:
+            with urllib.request.urlopen(
+                request, timeout=20,
+                context=telegram_ssl_context(bool(cfg.get("telegram_allow_self_signed"))),
+            ) as response:
                 result = json.loads(response.read().decode("utf-8"))
                 if response.status >= 300 or not result.get("ok"):
                     raise RuntimeError(result.get("description") or f"Telegram HTTP {response.status}")

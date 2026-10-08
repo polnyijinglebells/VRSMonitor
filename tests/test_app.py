@@ -135,10 +135,19 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(app.normalize_telegram_chat("https://t.me/polnyijinglebell5"), "@polnyijinglebell5")
 
     def test_telegram_ssl_context_keeps_certificate_verification_enabled(self):
-        app._telegram_ssl_context = None
+        app._telegram_ssl_contexts.clear()
         context = app.telegram_ssl_context()
         self.assertEqual(context.verify_mode, app.ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
+
+    def test_self_signed_mode_is_explicit_and_scoped(self):
+        app._telegram_ssl_contexts.clear()
+        insecure = app.telegram_ssl_context(True)
+        secure = app.telegram_ssl_context(False)
+        self.assertEqual(insecure.verify_mode, app.ssl.CERT_NONE)
+        self.assertFalse(insecure.check_hostname)
+        self.assertEqual(secure.verify_mode, app.ssl.CERT_REQUIRED)
+        self.assertTrue(secure.check_hostname)
 
 
 if __name__ == "__main__":

@@ -216,6 +216,7 @@ $("#settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.target).entries());
   values.military_report_enabled = event.target.elements.military_report_enabled.checked;
+  values.telegram_allow_self_signed = event.target.elements.telegram_allow_self_signed.checked;
   for (const key of ["poll_seconds", "offline_after_seconds", "shift_hour"]) values[key] = Number(values[key]);
   try {
     await api("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(values)});

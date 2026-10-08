@@ -13,5 +13,6 @@
   "webhook_url": "",
   "military_report_enabled": false,
   "military_report_time": "08:05",
-  "military_report_chat": "@polnyijinglebell5"
+  "military_report_chat": "@polnyijinglebell5",
+  "telegram_allow_self_signed": false
 }

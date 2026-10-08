@@ -110,6 +110,8 @@
         <label>Время отправки<input name="military_report_time" type="time" required></label>
         <label>Получатель<input name="military_report_chat" placeholder="@polnyijinglebell5" required></label>
         <label class="wide">Telegram Bot Token<input name="telegram_bot_token" type="password" autocomplete="off" placeholder="123456789:AA..."></label>
+        <label class="wide checkbox-label danger-option"><input name="telegram_allow_self_signed" type="checkbox"> Разрешить самоподписанный сертификат Telegram</label>
+        <p class="wide security-warning">Включайте только при ошибке CERTIFICATE_VERIFY_FAILED и только в доверенной сети. HTTPS-посредник сможет видеть токен бота и содержимое отчёта.</p>
         <div class="wide report-test-row"><button id="testMilitaryReport" type="button" class="button ghost">Отправить тестовый отчёт</button><span class="muted">Сначала сохраните настройки. Будет отправлен отчёт за последние завершённые сутки.</span></div>
       </div>
       <p class="hint">Изменение порта и адреса прослушивания выполняется в config.json и требует перезапуска.</p>
