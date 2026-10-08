@@ -164,12 +164,32 @@ def request_json(url: str, cfg: dict[str, Any], payload: dict[str, Any] | None =
 def discover_receivers(cfg: dict[str, Any]) -> list[sqlite3.Row]:
     data = request_json(f'{cfg["vrs_url"]}/ServerConfig.json', cfg)
     feeds = data.get("Receivers") or data.get("receivers") or []
-    now = int(time.time())
     with db() as con:
         known_ids: list[int] = []
         for feed in feeds:
-            feed_id = int(feed.get("id", feed.get("Id")))
-            name = str(feed.get("name", feed.get("Name", f"Приёмник {feed_id}")))
+            if not isinstance(feed, dict):
+                logging.warning("VRS вернул некорректную запись приёмника: %r", feed)
+                continue
+            # Classic VRS serialises ServerReceiverJson as UniqueId/Name, while
+            # other releases and documentation use id/name or Id/Name.
+            raw_id = next(
+                (feed[key] for key in ("id", "Id", "UniqueId", "UniqueID", "uniqueId")
+                 if key in feed and feed[key] is not None),
+                None,
+            )
+            if raw_id is None:
+                logging.warning("Пропущена запись VRS без ID: %r", feed)
+                continue
+            try:
+                feed_id = int(raw_id)
+            except (TypeError, ValueError):
+                logging.warning("Пропущена запись VRS с неверным ID: %r", feed)
+                continue
+            raw_name = next(
+                (feed[key] for key in ("name", "Name") if key in feed and feed[key]),
+                f"Приёмник {feed_id}",
+            )
+            name = str(raw_name)
             known_ids.append(feed_id)
             con.execute(
                 """INSERT INTO receivers(feed_id, name) VALUES(?, ?)

@@ -74,6 +74,20 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(receiver["status"], "offline")
         self.assertEqual(packets, 5)
 
+    def test_discovery_supports_classic_vrs_unique_id(self):
+        payload = {
+            "Receivers": [
+                {"UniqueId": 7, "Name": "Основной"},
+                {"id": 8, "name": "Резервный"},
+                {"Name": "Служебная запись без ID"},
+            ]
+        }
+        with patch.object(app, "request_json", return_value=payload):
+            receivers = app.discover_receivers(dict(app.DEFAULT_CONFIG))
+        self.assertEqual([(row["feed_id"], row["name"]) for row in receivers], [
+            (7, "Основной"), (8, "Резервный")
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
