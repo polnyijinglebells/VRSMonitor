@@ -378,11 +378,16 @@ def dashboard_payload(date_text: str | None = None) -> dict[str, Any]:
         receivers = con.execute("SELECT * FROM receivers WHERE enabled=1 ORDER BY name").fetchall()
         for receiver in receivers:
             stats = period_stats(con, receiver["id"], start, end)
+            packet_rate = con.execute(
+                "SELECT COALESCE(SUM(packets),0) value FROM packet_samples WHERE receiver_id=? AND at>?",
+                (receiver["id"], now - 60),
+            ).fetchone()["value"]
             result.append({
                 "id": receiver["id"], "feed_id": receiver["feed_id"], "name": receiver["name"],
                 "status": receiver["status"], "status_since": receiver["status_since"],
                 "last_seen": receiver["last_seen"], "last_packet_at": receiver["last_packet_at"],
                 "last_error": receiver["last_error"], "continuous_seconds": max(0, now - receiver["status_since"]) if receiver["status_since"] else 0,
+                "packet_rate": packet_rate,
                 **stats,
             })
     return {

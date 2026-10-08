@@ -40,8 +40,33 @@
       </div>
     </section>
 
+    <section class="display-toolbar">
+      <div class="display-filters">
+        <label>Показать
+          <select id="statusFilter">
+            <option value="all">Все приёмники</option>
+            <option value="online">Только работающие</option>
+            <option value="offline">Только отключённые</option>
+          </select>
+        </label>
+        <label>Сортировка
+          <select id="sortSelect">
+            <option value="online_first">Сначала работающие</option>
+            <option value="offline_first">Сначала отключённые</option>
+            <option value="name">По названию</option>
+            <option value="packet_rate">По потоку данных</option>
+            <option value="packets">По пакетам за сутки</option>
+          </select>
+        </label>
+      </div>
+      <div class="view-switch" role="group" aria-label="Вид списка">
+        <button id="tableViewBtn" class="view-button active" type="button">☰ Одна строка</button>
+        <button id="cardViewBtn" class="view-button" type="button">▦ Карточки</button>
+      </div>
+    </section>
+
     <div id="alert" class="alert hidden"></div>
-    <section id="receiverGrid" class="receiver-grid" aria-live="polite"></section>
+    <section id="receiverGrid" class="receiver-list table-mode" aria-live="polite"></section>
 
     <section class="panel events-panel">
       <div class="panel-heading">

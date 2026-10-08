@@ -88,6 +88,20 @@ class MonitorTests(unittest.TestCase):
             (7, "Основной"), (8, "Резервный")
         ])
 
+    def test_dashboard_reports_last_minute_packet_rate(self):
+        with app.db() as con:
+            rid = con.execute(
+                "INSERT INTO receivers(feed_id,name,status,status_since) VALUES(1,'A','online',100)"
+            ).lastrowid
+            con.executemany(
+                "INSERT INTO packet_samples(receiver_id,at,packets) VALUES(?,?,?)",
+                [(rid, 130, 5), (rid, 150, 12), (rid, 199, 8)],
+            )
+        with patch.object(app, "load_config", return_value=dict(app.DEFAULT_CONFIG)), \
+             patch.object(app.time, "time", return_value=200):
+            payload = app.dashboard_payload()
+        self.assertEqual(payload["receivers"][0]["packet_rate"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()
