@@ -409,6 +409,18 @@ def events_payload(start: int, end: int, receiver_id: int | None = None) -> list
         return [dict(row) for row in con.execute(query, params).fetchall()]
 
 
+def notifications_payload(limit: int = 200) -> list[dict[str, Any]]:
+    limit = max(1, min(1000, int(limit)))
+    with db() as con:
+        rows = con.execute(
+            """SELECT e.id,e.at,e.status,e.reason,r.name receiver_name
+               FROM status_events e JOIN receivers r ON r.id=e.receiver_id
+               ORDER BY e.id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def report_csv(date_text: str | None) -> tuple[str, bytes]:
     data = dashboard_payload(date_text)
     stream = io.StringIO()
@@ -477,6 +489,9 @@ class Handler(BaseHTTPRequestHandler):
                 start, end, _ = shift_bounds(query.get("date", [None])[0], cfg)
                 receiver_id = int(query["receiver_id"][0]) if query.get("receiver_id") else None
                 self.send_json(events_payload(start, end, receiver_id))
+            elif parsed.path == "/api/notifications":
+                limit = int(query.get("limit", [200])[0])
+                self.send_json(notifications_payload(limit))
             elif parsed.path == "/api/settings":
                 cfg = load_config()
                 safe = dict(cfg)

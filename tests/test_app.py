@@ -102,6 +102,17 @@ class MonitorTests(unittest.TestCase):
             payload = app.dashboard_payload()
         self.assertEqual(payload["receivers"][0]["packet_rate"], 20)
 
+    def test_notifications_are_persisted_and_newest_first(self):
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(3,'Север')").lastrowid
+            con.executemany(
+                "INSERT INTO status_events(receiver_id,at,status,reason) VALUES(?,?,?,?)",
+                [(rid, 100, "offline", "Нет данных"), (rid, 200, "online", "Восстановлен")],
+            )
+        notifications = app.notifications_payload()
+        self.assertEqual([item["status"] for item in notifications], ["online", "offline"])
+        self.assertEqual(notifications[0]["receiver_name"], "Север")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@
     </div>
     <div class="top-actions">
       <span id="clock" class="clock">—</span>
-      <button id="notifyBtn" class="button ghost">Уведомления</button>
+      <button id="notifyBtn" class="button ghost notification-button">Уведомления <span id="notificationBadge" class="notification-badge hidden">0</span></button>
       <button id="settingsBtn" class="button ghost">Настройки</button>
       <button id="checkBtn" class="button primary">Проверить сейчас</button>
     </div>
@@ -82,6 +82,21 @@
     </section>
   </main>
 
+  <div id="toastContainer" class="toast-container" aria-live="assertive"></div>
+
+  <dialog id="notificationsDialog" class="notifications-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">ИСТОРИЯ</p><h2>Уведомления</h2></div>
+      <button type="button" class="icon-btn" data-close>×</button>
+    </div>
+    <div class="notification-tools">
+      <span class="muted">События сохраняются и не пропадут после обновления страницы.</span>
+      <button id="enableBrowserNotifications" type="button" class="button ghost">Включить всплывающие</button>
+    </div>
+    <div id="notificationsList" class="notifications-list"></div>
+    <div class="dialog-actions"><button type="button" class="button primary" data-close>Закрыть</button></div>
+  </dialog>
+
   <dialog id="settingsDialog">
     <form id="settingsForm">
       <div class="dialog-head"><h2>Настройки</h2><button type="button" class="icon-btn" data-close>×</button></div>
@@ -90,13 +105,6 @@
         <label>Опрос, секунд<input name="poll_seconds" type="number" min="5" required></label>
         <label>Считать отключённым через, секунд<input name="offline_after_seconds" type="number" min="10" required></label>
         <label>Начало суток, час<input name="shift_hour" type="number" min="0" max="23" required></label>
-        <label>Метод контроля<select name="health_mode"><option value="messages">По новым сообщениям</option><option value="http">По доступности VRS</option></select></label>
-        <label>Логин VRS<input name="vrs_username" autocomplete="off"></label>
-        <label>Пароль VRS<input name="vrs_password" type="password" autocomplete="new-password"></label>
-        <label class="wide section-label">Telegram</label>
-        <label>Токен бота<input name="telegram_bot_token" type="password" autocomplete="off"></label>
-        <label>Chat ID<input name="telegram_chat_id"></label>
-        <label class="wide">Webhook URL<input name="webhook_url" type="url" placeholder="https://..."></label>
       </div>
       <p class="hint">Изменение порта и адреса прослушивания выполняется в config.json и требует перезапуска.</p>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary" type="submit">Сохранить</button></div>

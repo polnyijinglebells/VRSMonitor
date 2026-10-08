@@ -2,6 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let lastStatuses = new Map();
 let activeDate = "";
 let currentReceivers = [];
+let notificationEvents = [];
 let viewMode = localStorage.getItem("vrs-view") || "table";
 let statusFilter = localStorage.getItem("vrs-filter") || "all";
 let sortMode = localStorage.getItem("vrs-sort") || "online_first";
@@ -34,12 +35,56 @@ function statusTitle(status) {
 
 function notifyChange(receiver) {
   const previous = lastStatuses.get(receiver.id);
-  if (previous && previous !== receiver.status && "Notification" in window && Notification.permission === "granted") {
-    new Notification(`VRS: ${receiver.name}`, {
-      body: receiver.status === "online" ? "Приёмник снова работает" : "Приёмник отключён"
-    });
+  if (previous && previous !== receiver.status) {
+    const message = receiver.status === "online" ? "Приёмник снова подключён" : "Приёмник отключён";
+    showToast(receiver.name, message, receiver.status);
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification(`VRS: ${receiver.name}`, {body: message});
+    }
   }
   lastStatuses.set(receiver.id, receiver.status);
+}
+
+function showToast(receiverName, message, status) {
+  const toast = document.createElement("div");
+  toast.className = `toast ${status}`;
+  toast.innerHTML = `<i class="toast-dot"></i><div><strong>${escapeHtml(receiverName)}</strong><span>${escapeHtml(message)}</span></div><button class="toast-close" type="button">×</button>`;
+  toast.querySelector("button").addEventListener("click", () => toast.remove());
+  $("#toastContainer").prepend(toast);
+  setTimeout(() => toast.remove(), 12000);
+}
+
+function renderNotificationCenter() {
+  const list = $("#notificationsList");
+  if (!notificationEvents.length) {
+    list.innerHTML = '<div class="empty">Уведомлений пока нет</div>';
+    return;
+  }
+  list.innerHTML = notificationEvents.map(event => {
+    const offline = event.status === "offline";
+    return `<article class="notification-item ${event.status}">
+      <div class="notification-icon">${offline ? "!" : "✓"}</div>
+      <div class="notification-copy"><strong>${escapeHtml(event.receiver_name)} — ${offline ? "отключён" : "подключён"}</strong><span>${escapeHtml(event.reason || (offline ? "Поток данных остановлен" : "Поток данных восстановлен"))}</span></div>
+      <time class="notification-time">${fmtTime(event.at)}</time>
+    </article>`;
+  }).join("");
+}
+
+function updateNotificationBadge() {
+  const lastRead = Number(localStorage.getItem("vrs-notifications-read") || 0);
+  const unread = notificationEvents.filter(event => event.id > lastRead).length;
+  const badge = $("#notificationBadge");
+  badge.textContent = unread > 99 ? "99+" : unread;
+  badge.classList.toggle("hidden", unread === 0);
+}
+
+function openNotificationCenter() {
+  renderNotificationCenter();
+  $("#notificationsDialog").showModal();
+  if (notificationEvents.length) {
+    localStorage.setItem("vrs-notifications-read", Math.max(...notificationEvents.map(event => event.id)));
+  }
+  updateNotificationBadge();
 }
 
 function visibleReceivers() {
@@ -104,7 +149,9 @@ function renderReceivers() {
 async function refresh() {
   try {
     const suffix = activeDate ? `?date=${encodeURIComponent(activeDate)}` : "";
-    const [data, events] = await Promise.all([api(`/api/status${suffix}`), api(`/api/events${suffix}`)]);
+    const [data, events, notifications] = await Promise.all([
+      api(`/api/status${suffix}`), api(`/api/events${suffix}`), api("/api/notifications?limit=200")
+    ]);
     $("#alert").classList.add("hidden");
     if (!activeDate) {
       activeDate = data.shift_date;
@@ -112,6 +159,8 @@ async function refresh() {
     }
     data.receivers.forEach(notifyChange);
     currentReceivers = data.receivers;
+    notificationEvents = notifications;
+    updateNotificationBadge();
     $("#onlineCount").textContent = data.receivers.filter(receiver => receiver.status === "online").length;
     $("#offlineCount").textContent = data.receivers.filter(receiver => receiver.status === "offline").length;
     $("#packetCount").textContent = fmtNumber(data.receivers.reduce((total, receiver) => total + receiver.packets, 0));
@@ -160,7 +209,7 @@ $("#sortSelect").addEventListener("change", event => {
 $("#tableViewBtn").addEventListener("click", () => setView("table"));
 $("#cardViewBtn").addEventListener("click", () => setView("card"));
 $("#settingsBtn").addEventListener("click", openSettings);
-document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => $("#settingsDialog").close()));
+document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 $("#settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.target).entries());
@@ -178,7 +227,8 @@ $("#checkBtn").addEventListener("click", async () => {
   await api("/api/check", {method: "POST"});
   setTimeout(refresh, 900);
 });
-$("#notifyBtn").addEventListener("click", async () => {
+$("#notifyBtn").addEventListener("click", openNotificationCenter);
+$("#enableBrowserNotifications").addEventListener("click", async () => {
   if (!("Notification" in window)) return alert("Браузер не поддерживает уведомления");
   const result = await Notification.requestPermission();
   alert(result === "granted" ? "Уведомления в браузере включены" : "Браузер не разрешил уведомления");
