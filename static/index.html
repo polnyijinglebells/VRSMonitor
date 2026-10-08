@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Контроль приёмников VRS</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">VIRTUAL RADAR SERVER</p>
+      <h1>Контроль приёмников</h1>
+    </div>
+    <div class="top-actions">
+      <span id="clock" class="clock">—</span>
+      <button id="notifyBtn" class="button ghost">Уведомления</button>
+      <button id="settingsBtn" class="button ghost">Настройки</button>
+      <button id="checkBtn" class="button primary">Проверить сейчас</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="summary">
+      <div><span>Работают</span><strong id="onlineCount">0</strong></div>
+      <div><span>Отключены</span><strong id="offlineCount">0</strong></div>
+      <div><span>Пакетов за сутки</span><strong id="packetCount">0</strong></div>
+      <div class="shift"><span>Контрольные сутки</span><strong id="shiftLabel">—</strong></div>
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <label for="dateSelect">Дата начала суток</label>
+        <input id="dateSelect" type="date">
+      </div>
+      <div class="toolbar-actions">
+        <button id="todayBtn" class="button ghost">Текущие сутки</button>
+        <a id="csvBtn" class="button ghost" href="/api/report.csv">Скачать CSV</a>
+        <button id="printBtn" class="button ghost">Печать / PDF</button>
+      </div>
+    </section>
+
+    <div id="alert" class="alert hidden"></div>
+    <section id="receiverGrid" class="receiver-grid" aria-live="polite"></section>
+
+    <section class="panel events-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">ЖУРНАЛ</p><h2>Включения и отключения</h2></div>
+        <span id="eventCount" class="muted"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Время</th><th>Приёмник</th><th>Событие</th><th>Причина</th></tr></thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm">
+      <div class="dialog-head"><h2>Настройки</h2><button type="button" class="icon-btn" data-close>×</button></div>
+      <div class="form-grid">
+        <label class="wide">Адрес Virtual Radar Server<input name="vrs_url" placeholder="http://127.0.0.1:8080/VirtualRadar" required></label>
+        <label>Опрос, секунд<input name="poll_seconds" type="number" min="5" required></label>
+        <label>Считать отключённым через, секунд<input name="offline_after_seconds" type="number" min="10" required></label>
+        <label>Начало суток, час<input name="shift_hour" type="number" min="0" max="23" required></label>
+        <label>Метод контроля<select name="health_mode"><option value="messages">По новым сообщениям</option><option value="http">По доступности VRS</option></select></label>
+        <label>Логин VRS<input name="vrs_username" autocomplete="off"></label>
+        <label>Пароль VRS<input name="vrs_password" type="password" autocomplete="new-password"></label>
+        <label class="wide section-label">Telegram</label>
+        <label>Токен бота<input name="telegram_bot_token" type="password" autocomplete="off"></label>
+        <label>Chat ID<input name="telegram_chat_id"></label>
+        <label class="wide">Webhook URL<input name="webhook_url" type="url" placeholder="https://..."></label>
+      </div>
+      <p class="hint">Изменение порта и адреса прослушивания выполняется в config.json и требует перезапуска.</p>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary" type="submit">Сохранить</button></div>
+    </form>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
+
+import app
+
+
+class MonitorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_db = app.DB_PATH
+        app.DB_PATH = Path(self.tmp.name) / "test.db"
+        app.init_db()
+
+    def tearDown(self):
+        app.DB_PATH = self.old_db
+        self.tmp.cleanup()
+
+    def test_shift_before_eight_belongs_to_previous_day(self):
+        cfg = dict(app.DEFAULT_CONFIG)
+        with patch.object(app, "datetime") as mocked:
+            mocked.now.return_value = datetime(2026, 10, 8, 7, 30).astimezone()
+            mocked.strptime = datetime.strptime
+            mocked.combine = datetime.combine
+            mocked.min = datetime.min
+            start, _, label = app.shift_bounds(None, cfg)
+        self.assertEqual(label, "2026-10-07")
+        self.assertEqual(datetime.fromtimestamp(start).hour, 8)
+
+    def test_period_stats_reconstructs_online_time(self):
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(1,'A')").lastrowid
+            con.executemany(
+                "INSERT INTO status_events(receiver_id,at,status) VALUES(?,?,?)",
+                [(rid, 100, "online"), (rid, 200, "offline"), (rid, 250, "online")],
+            )
+            con.execute("INSERT INTO packet_samples(receiver_id,at,packets) VALUES(?,?,?)", (rid, 150, 42))
+            with patch.object(app.time, "time", return_value=300):
+                stats = app.period_stats(con, rid, 100, 300)
+        self.assertEqual(stats["online_seconds"], 150)
+        self.assertEqual(stats["outages"], 1)
+        self.assertEqual(stats["packets"], 42)
+
+    def test_receiver_packet_delta_and_offline_transition(self):
+        cfg = dict(app.DEFAULT_CONFIG, offline_after_seconds=30)
+        snapshots = [
+            {"acList": [{"Icao": "ABC123", "CMsgs": 10}]},
+            {"acList": [{"Icao": "ABC123", "CMsgs": 15}]},
+            {"acList": [{"Icao": "ABC123", "CMsgs": 15}]},
+        ]
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(1,'A')").lastrowid
+
+        with patch.object(app, "request_json", side_effect=snapshots), \
+             patch.object(app, "send_notification"):
+            with patch.object(app.time, "time", return_value=100):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg)
+            with patch.object(app.time, "time", return_value=110):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg)
+            with patch.object(app.time, "time", return_value=145):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg)
+
+        with app.db() as con:
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+            packets = con.execute("SELECT SUM(packets) n FROM packet_samples WHERE receiver_id=?", (rid,)).fetchone()["n"]
+        self.assertEqual(receiver["status"], "offline")
+        self.assertEqual(packets, 5)
+
+
+if __name__ == "__main__":
+    unittest.main()
