@@ -180,7 +180,9 @@ async function openSettings() {
     const config = await api("/api/settings");
     const form = $("#settingsForm");
     Object.entries(config).forEach(([key, value]) => {
-      if (form.elements[key]) form.elements[key].value = value ?? "";
+      if (!form.elements[key]) return;
+      if (form.elements[key].type === "checkbox") form.elements[key].checked = Boolean(value);
+      else form.elements[key].value = value ?? "";
     });
     $("#settingsDialog").showModal();
   } catch (error) {
@@ -213,6 +215,7 @@ document.querySelectorAll("[data-close]").forEach(button => button.addEventListe
 $("#settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.target).entries());
+  values.military_report_enabled = event.target.elements.military_report_enabled.checked;
   for (const key of ["poll_seconds", "offline_after_seconds", "shift_hour"]) values[key] = Number(values[key]);
   try {
     await api("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(values)});
@@ -226,6 +229,20 @@ $("#settingsForm").addEventListener("submit", async event => {
 $("#checkBtn").addEventListener("click", async () => {
   await api("/api/check", {method: "POST"});
   setTimeout(refresh, 900);
+});
+$("#testMilitaryReport").addEventListener("click", async () => {
+  const button = $("#testMilitaryReport");
+  button.disabled = true;
+  button.textContent = "Отправляется…";
+  try {
+    const result = await api("/api/military-report/test", {method: "POST"});
+    alert(`Отчёт отправлен в ${result.chat}. Сообщений: ${result.messages}`);
+  } catch (error) {
+    alert(`Не удалось отправить отчёт: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Отправить тестовый отчёт";
+  }
 });
 $("#notifyBtn").addEventListener("click", openNotificationCenter);
 $("#enableBrowserNotifications").addEventListener("click", async () => {

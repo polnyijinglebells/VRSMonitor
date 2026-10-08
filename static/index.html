@@ -105,6 +105,12 @@
         <label>Опрос, секунд<input name="poll_seconds" type="number" min="5" required></label>
         <label>Считать отключённым через, секунд<input name="offline_after_seconds" type="number" min="10" required></label>
         <label>Начало суток, час<input name="shift_hour" type="number" min="0" max="23" required></label>
+        <label class="wide section-label">Военный отчёт в Telegram</label>
+        <label class="wide checkbox-label"><input name="military_report_enabled" type="checkbox"> Отправлять отчёт автоматически</label>
+        <label>Время отправки<input name="military_report_time" type="time" required></label>
+        <label>Получатель<input name="military_report_chat" placeholder="@polnyijinglebell5" required></label>
+        <label class="wide">Telegram Bot Token<input name="telegram_bot_token" type="password" autocomplete="off" placeholder="123456789:AA..."></label>
+        <div class="wide report-test-row"><button id="testMilitaryReport" type="button" class="button ghost">Отправить тестовый отчёт</button><span class="muted">Сначала сохраните настройки. Будет отправлен отчёт за последние завершённые сутки.</span></div>
       </div>
       <p class="hint">Изменение порта и адреса прослушивания выполняется в config.json и требует перезапуска.</p>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button class="button primary" type="submit">Сохранить</button></div>

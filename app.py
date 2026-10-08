@@ -47,6 +47,9 @@ DEFAULT_CONFIG = {
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "webhook_url": "",
+    "military_report_enabled": False,
+    "military_report_time": "08:05",
+    "military_report_chat": "@polnyijinglebell5",
 }
 
 config_lock = threading.RLock()
@@ -76,6 +79,13 @@ def save_config(changes: dict[str, Any]) -> dict[str, Any]:
     cfg["shift_hour"] = max(0, min(23, int(cfg["shift_hour"])))
     cfg["listen_port"] = max(1, min(65535, int(cfg["listen_port"])))
     cfg["health_mode"] = "http" if cfg.get("health_mode") == "http" else "messages"
+    cfg["military_report_enabled"] = bool(cfg.get("military_report_enabled"))
+    report_time = str(cfg.get("military_report_time", "08:05"))
+    try:
+        datetime.strptime(report_time, "%H:%M")
+    except ValueError:
+        report_time = "08:05"
+    cfg["military_report_time"] = report_time
     cfg["vrs_url"] = str(cfg["vrs_url"]).rstrip("/")
     with config_lock:
         CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -140,6 +150,36 @@ def init_db() -> None:
                 receiver_id INTEGER REFERENCES receivers(id),
                 at INTEGER NOT NULL,
                 channel TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                detail TEXT
+            );
+            CREATE TABLE IF NOT EXISTS military_sightings (
+                id INTEGER PRIMARY KEY,
+                receiver_id INTEGER NOT NULL REFERENCES receivers(id),
+                shift_date TEXT NOT NULL,
+                aircraft_key TEXT NOT NULL,
+                icao TEXT,
+                callsign TEXT,
+                registration TEXT,
+                aircraft_type TEXT,
+                model TEXT,
+                operator TEXT,
+                country TEXT,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                max_altitude INTEGER,
+                max_speed INTEGER,
+                from_airport TEXT,
+                to_airport TEXT,
+                stops TEXT,
+                messages INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(receiver_id, shift_date, aircraft_key)
+            );
+            CREATE INDEX IF NOT EXISTS ix_military_sightings_shift
+                ON military_sightings(shift_date, first_seen);
+            CREATE TABLE IF NOT EXISTS report_runs (
+                report_key TEXT PRIMARY KEY,
+                at INTEGER NOT NULL,
                 success INTEGER NOT NULL,
                 detail TEXT
             );
@@ -216,6 +256,56 @@ def set_status(con: sqlite3.Connection, receiver: sqlite3.Row, status: str, now:
     return True
 
 
+def record_military_aircraft(
+    con: sqlite3.Connection, receiver_id: int, aircraft: list[dict[str, Any]], now: int, shift_hour: int
+) -> None:
+    local_now = datetime.fromtimestamp(now).astimezone()
+    shift_day = local_now.date() if local_now.hour >= shift_hour else (local_now - timedelta(days=1)).date()
+    for item in aircraft:
+        if item.get("Mil") is not True:
+            continue
+        aircraft_key = str(item.get("Icao") or item.get("Id") or "").strip()
+        if not aircraft_key:
+            continue
+        stops_value = item.get("Stops") or []
+        stops = " → ".join(str(value) for value in stops_value) if isinstance(stops_value, list) else str(stops_value)
+        altitude = item.get("Alt")
+        speed = item.get("Spd")
+        con.execute(
+            """INSERT INTO military_sightings(
+                   receiver_id,shift_date,aircraft_key,icao,callsign,registration,aircraft_type,
+                   model,operator,country,first_seen,last_seen,max_altitude,max_speed,
+                   from_airport,to_airport,stops,messages
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(receiver_id,shift_date,aircraft_key) DO UPDATE SET
+                   callsign=COALESCE(NULLIF(excluded.callsign,''),military_sightings.callsign),
+                   registration=COALESCE(NULLIF(excluded.registration,''),military_sightings.registration),
+                   aircraft_type=COALESCE(NULLIF(excluded.aircraft_type,''),military_sightings.aircraft_type),
+                   model=COALESCE(NULLIF(excluded.model,''),military_sightings.model),
+                   operator=COALESCE(NULLIF(excluded.operator,''),military_sightings.operator),
+                   country=COALESCE(NULLIF(excluded.country,''),military_sightings.country),
+                   last_seen=excluded.last_seen,
+                   max_altitude=CASE WHEN excluded.max_altitude IS NULL THEN military_sightings.max_altitude
+                       WHEN military_sightings.max_altitude IS NULL OR excluded.max_altitude>military_sightings.max_altitude THEN excluded.max_altitude ELSE military_sightings.max_altitude END,
+                   max_speed=CASE WHEN excluded.max_speed IS NULL THEN military_sightings.max_speed
+                       WHEN military_sightings.max_speed IS NULL OR excluded.max_speed>military_sightings.max_speed THEN excluded.max_speed ELSE military_sightings.max_speed END,
+                   from_airport=COALESCE(NULLIF(excluded.from_airport,''),military_sightings.from_airport),
+                   to_airport=COALESCE(NULLIF(excluded.to_airport,''),military_sightings.to_airport),
+                   stops=COALESCE(NULLIF(excluded.stops,''),military_sightings.stops),
+                   messages=MAX(excluded.messages,military_sightings.messages)""",
+            (
+                receiver_id, shift_day.isoformat(), aircraft_key, str(item.get("Icao") or ""),
+                str(item.get("Call") or "").strip(), str(item.get("Reg") or "").strip(),
+                str(item.get("Type") or "").strip(), str(item.get("Mdl") or "").strip(),
+                str(item.get("Op") or "").strip(), str(item.get("Cou") or "").strip(), now, now,
+                int(altitude) if isinstance(altitude, (int, float)) else None,
+                int(speed) if isinstance(speed, (int, float)) else None,
+                str(item.get("From") or "").strip(), str(item.get("To") or "").strip(), stops,
+                int(item.get("CMsgs", 0) or 0),
+            ),
+        )
+
+
 def send_notification(receiver_id: int, receiver_name: str, status: str, reason: str, cfg: dict[str, Any]) -> None:
     moment = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S")
     marker = "🔴" if status == "offline" else "🟢"
@@ -272,6 +362,7 @@ def poll_receiver(receiver: sqlite3.Row, cfg: dict[str, Any]) -> None:
 
         with db() as con:
             fresh = con.execute("SELECT * FROM receivers WHERE id=?", (receiver["id"],)).fetchone()
+            record_military_aircraft(con, receiver["id"], aircraft, now, int(cfg["shift_hour"]))
             last_packet = now if packet_delta > 0 else (fresh["last_packet_at"] or now)
             con.execute(
                 """UPDATE receivers SET last_seen=?, last_packet_at=?, total_packets=total_packets+?,
@@ -320,6 +411,7 @@ def monitor_loop() -> None:
                 receivers = con.execute("SELECT * FROM receivers WHERE enabled=1").fetchall()
             for receiver in receivers:
                 poll_receiver(receiver, cfg)
+        maybe_send_scheduled_military_report(cfg)
         poll_now.wait(int(cfg["poll_seconds"]))
         poll_now.clear()
 
@@ -421,6 +513,136 @@ def notifications_payload(limit: int = 200) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def normalize_telegram_chat(value: str) -> str:
+    chat = str(value or "").strip().rstrip("/")
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if chat.lower().startswith(prefix):
+            chat = chat[len(prefix):]
+            break
+    if chat and not chat.startswith(("@", "-")) and not chat.isdigit():
+        chat = "@" + chat
+    return chat
+
+
+def last_completed_shift_date(now: datetime, shift_hour: int) -> str:
+    today_boundary = now.replace(hour=shift_hour, minute=0, second=0, microsecond=0)
+    completed_end = today_boundary if now >= today_boundary else today_boundary - timedelta(days=1)
+    return (completed_end - timedelta(days=1)).date().isoformat()
+
+
+def military_report_messages(shift_date: str, cfg: dict[str, Any]) -> list[str]:
+    shift_start = datetime.strptime(shift_date, "%Y-%m-%d").date()
+    start_text = datetime.combine(shift_start, datetime.min.time()).replace(hour=int(cfg["shift_hour"])).strftime("%d.%m.%Y %H:%M")
+    end_text = (datetime.combine(shift_start, datetime.min.time()) + timedelta(days=1)).replace(hour=int(cfg["shift_hour"])).strftime("%d.%m.%Y %H:%M")
+    with db() as con:
+        rows = con.execute(
+            """SELECT s.*,r.name receiver_name FROM military_sightings s
+               JOIN receivers r ON r.id=s.receiver_id WHERE s.shift_date=?
+               ORDER BY s.first_seen""",
+            (shift_date,),
+        ).fetchall()
+    merged: dict[str, dict[str, Any]] = {}
+    for source in rows:
+        key = source["icao"] or source["aircraft_key"]
+        item = merged.setdefault(key, dict(source) | {"receivers": set()})
+        item["receivers"].add(source["receiver_name"])
+        item["first_seen"] = min(item["first_seen"], source["first_seen"])
+        item["last_seen"] = max(item["last_seen"], source["last_seen"])
+        for field in ("max_altitude", "max_speed", "messages"):
+            item[field] = max(item[field] or 0, source[field] or 0)
+        for field in ("callsign", "registration", "aircraft_type", "model", "operator", "country", "from_airport", "to_airport", "stops"):
+            if not item.get(field) and source[field]:
+                item[field] = source[field]
+    header = f"ВОЕННЫЕ САМОЛЁТЫ\nПериод: {start_text} — {end_text}\nОбнаружено: {len(merged)}\n"
+    if not merged:
+        return [header + "\nЗа этот период военные воздушные суда не обнаружены."]
+    entries = []
+    for number, item in enumerate(merged.values(), 1):
+        identity = item.get("callsign") or item.get("registration") or item.get("icao") or item.get("aircraft_key")
+        route_parts = [item.get("from_airport"), item.get("stops"), item.get("to_airport")]
+        route = " → ".join(str(part) for part in route_parts if part) or "не указан VRS"
+        first = datetime.fromtimestamp(item["first_seen"]).astimezone().strftime("%d.%m %H:%M:%S")
+        last = datetime.fromtimestamp(item["last_seen"]).astimezone().strftime("%d.%m %H:%M:%S")
+        details = [
+            f"{number}. ✈ {identity}",
+            f"ICAO: {item.get('icao') or '—'} | Регистрация: {item.get('registration') or '—'}",
+            f"Тип: {item.get('aircraft_type') or '—'} {item.get('model') or ''}".rstrip(),
+            f"Оператор/страна: {item.get('operator') or '—'} / {item.get('country') or '—'}",
+            f"Маршрут: {route}",
+            f"Наблюдался: {first} — {last}",
+            f"Макс. высота: {item.get('max_altitude') or '—'} ft | скорость: {item.get('max_speed') or '—'} kt",
+            f"Приёмники: {', '.join(sorted(item['receivers']))}",
+        ]
+        entries.append("\n".join(details))
+    messages: list[str] = []
+    current = header
+    for entry in entries:
+        addition = "\n\n" + entry
+        if len(current) + len(addition) > 3900:
+            messages.append(current)
+            current = f"ВОЕННЫЕ САМОЛЁТЫ — продолжение\nПериод: {start_text} — {end_text}\n" + addition
+        else:
+            current += addition
+    messages.append(current)
+    return messages
+
+
+def send_military_report(cfg: dict[str, Any], shift_date: str | None = None) -> dict[str, Any]:
+    token = str(cfg.get("telegram_bot_token") or "").strip()
+    chat = normalize_telegram_chat(str(cfg.get("military_report_chat") or ""))
+    if not token:
+        raise ValueError("Не указан Telegram Bot Token")
+    if not chat:
+        raise ValueError("Не указан получатель Telegram")
+    if shift_date is None:
+        shift_date = last_completed_shift_date(datetime.now().astimezone(), int(cfg["shift_hour"]))
+    messages = military_report_messages(shift_date, cfg)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    for message in messages:
+        payload = json.dumps({"chat_id": chat, "text": message, "disable_web_page_preview": True}).encode("utf-8")
+        request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "VRS-Monitor/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                if response.status >= 300 or not result.get("ok"):
+                    raise RuntimeError(result.get("description") or f"Telegram HTTP {response.status}")
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("description")
+            except Exception:
+                detail = None
+            raise RuntimeError(detail or f"Telegram HTTP {exc.code}") from exc
+    return {"ok": True, "shift_date": shift_date, "messages": len(messages), "chat": chat}
+
+
+def maybe_send_scheduled_military_report(cfg: dict[str, Any]) -> None:
+    if not cfg.get("military_report_enabled"):
+        return
+    now = datetime.now().astimezone()
+    hours, minutes = (int(part) for part in str(cfg["military_report_time"]).split(":"))
+    scheduled = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    if now < scheduled:
+        return
+    report_key = f"military:{now.date().isoformat()}"
+    with db() as con:
+        previous = con.execute("SELECT * FROM report_runs WHERE report_key=?", (report_key,)).fetchone()
+    if previous and (previous["success"] or int(time.time()) - previous["at"] < 600):
+        return
+    try:
+        result = send_military_report(cfg)
+        success, detail = 1, f'{result["chat"]}, сообщений: {result["messages"]}'
+        logging.info("Военный отчёт отправлен: %s", detail)
+    except Exception as exc:
+        success, detail = 0, str(exc)[:500]
+        logging.warning("Военный отчёт не отправлен: %s", exc)
+    with db() as con:
+        con.execute(
+            """INSERT INTO report_runs(report_key,at,success,detail) VALUES(?,?,?,?)
+               ON CONFLICT(report_key) DO UPDATE SET at=excluded.at,success=excluded.success,detail=excluded.detail""",
+            (report_key, int(time.time()), success, detail),
+        )
+
+
 def report_csv(date_text: str | None) -> tuple[str, bytes]:
     data = dashboard_payload(date_text)
     stream = io.StringIO()
@@ -518,6 +740,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/check":
                 poll_now.set()
                 self.send_json({"ok": True}, 202)
+            elif self.path == "/api/military-report/test":
+                self.send_json(send_military_report(load_config()))
             elif self.path == "/api/settings":
                 incoming = self.read_json()
                 old = load_config()

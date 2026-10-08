@@ -10,5 +10,8 @@
   "vrs_password": "",
   "telegram_bot_token": "",
   "telegram_chat_id": "",
-  "webhook_url": ""
+  "webhook_url": "",
+  "military_report_enabled": false,
+  "military_report_time": "08:05",
+  "military_report_chat": "@polnyijinglebell5"
 }

@@ -45,6 +45,7 @@ class MonitorTests(unittest.TestCase):
 
     def test_receiver_packet_delta_and_offline_transition(self):
         cfg = dict(app.DEFAULT_CONFIG, offline_after_seconds=30)
+        base = 1_700_000_000
         snapshots = [
             {"acList": [{"Icao": "ABC123", "CMsgs": 10}]},
             {"acList": [{"Icao": "ABC123", "CMsgs": 15}]},
@@ -55,15 +56,15 @@ class MonitorTests(unittest.TestCase):
 
         with patch.object(app, "request_json", side_effect=snapshots), \
              patch.object(app, "send_notification"):
-            with patch.object(app.time, "time", return_value=100):
+            with patch.object(app.time, "time", return_value=base):
                 with app.db() as con:
                     receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
                 app.poll_receiver(receiver, cfg)
-            with patch.object(app.time, "time", return_value=110):
+            with patch.object(app.time, "time", return_value=base + 10):
                 with app.db() as con:
                     receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
                 app.poll_receiver(receiver, cfg)
-            with patch.object(app.time, "time", return_value=145):
+            with patch.object(app.time, "time", return_value=base + 45):
                 with app.db() as con:
                     receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
                 app.poll_receiver(receiver, cfg)
@@ -112,6 +113,26 @@ class MonitorTests(unittest.TestCase):
         notifications = app.notifications_payload()
         self.assertEqual([item["status"] for item in notifications], ["online", "offline"])
         self.assertEqual(notifications[0]["receiver_name"], "Север")
+
+    def test_military_aircraft_is_saved_and_report_contains_route(self):
+        cfg = dict(app.DEFAULT_CONFIG)
+        observed = datetime(2026, 10, 8, 9, 0).astimezone()
+        timestamp = int(observed.timestamp())
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(9,'Военный канал')").lastrowid
+            app.record_military_aircraft(con, rid, [{
+                "Icao": "ABC123", "Mil": True, "Call": "TEST01", "Reg": "RF-00001",
+                "Type": "IL76", "Alt": 25000, "Spd": 410, "From": "UAAA Алматы",
+                "Stops": ["UACC Астана"], "To": "UUEE Москва", "CMsgs": 77,
+            }, {"Icao": "CIV001", "Mil": False, "Call": "CIVIL"}], timestamp, 8)
+        messages = app.military_report_messages("2026-10-08", cfg)
+        report = "\n".join(messages)
+        self.assertIn("TEST01", report)
+        self.assertIn("UAAA Алматы → UACC Астана → UUEE Москва", report)
+        self.assertNotIn("CIVIL", report)
+
+    def test_telegram_link_is_normalized_to_channel_username(self):
+        self.assertEqual(app.normalize_telegram_chat("https://t.me/polnyijinglebell5"), "@polnyijinglebell5")
 
 
 if __name__ == "__main__":
