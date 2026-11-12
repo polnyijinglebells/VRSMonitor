@@ -107,12 +107,12 @@ function renderCard(receiver) {
     <div class="card-head"><div class="identity"><i class="status-dot"></i><div><h3>${escapeHtml(receiver.name)}</h3><span class="status-text">${escapeHtml(receiver.vrs_connection_status || statusTitle(receiver.status))}</span></div></div><span class="feed-id">FEED ${receiver.feed_id}</span></div>
     <div class="duration"><span>${durationLabel}</span><strong data-duration="${receiver.continuous_seconds}">${fmtDuration(receiver.continuous_seconds)}</strong></div>
     <div class="metrics">
-      <div class="metric flow-metric"><span>Поток данных</span><strong>${fmtNumber(receiver.packet_rate)} пак/мин</strong></div>
+      <div class="metric flow-metric"><span>Поток данных</span><strong>${fmtNumber(receiver.packet_rate)} сообщ/мин</strong></div>
       <div class="metric"><span>Сообщений всего VRS</span><strong>${fmtNumber(receiver.vrs_messages_total)}</strong></div>
-      <div class="metric"><span>Пакетов за сутки</span><strong>${fmtNumber(receiver.packets)}</strong></div>
+      <div class="metric"><span>Сообщений за сутки</span><strong>${fmtNumber(receiver.packets)}</strong></div>
       <div class="metric"><span>Работа за сутки</span><strong>${fmtDuration(receiver.online_seconds)}</strong></div>
       <div class="metric"><span>Отключений</span><strong>${receiver.outages}</strong></div>
-      <div class="metric"><span>Последний пакет</span><strong>${receiver.last_packet_at ? new Date(receiver.last_packet_at * 1000).toLocaleTimeString("ru-RU") : "—"}</strong></div>
+      <div class="metric"><span>Последнее сообщение</span><strong>${receiver.last_packet_at ? new Date(receiver.last_packet_at * 1000).toLocaleTimeString("ru-RU") : "—"}</strong></div>
     </div>${error}
   </article>`;
 }
@@ -122,7 +122,7 @@ function renderTable(receivers) {
     <td class="state-cell"><i class="status-dot"></i>${escapeHtml(receiver.vrs_connection_status || statusTitle(receiver.status))}</td>
     <td><span class="receiver-name">${escapeHtml(receiver.name)}</span><br><span class="feed-id">FEED ${receiver.feed_id}</span></td>
     <td>${fmtNumber(receiver.vrs_messages_total)}</td>
-    <td class="flow ${receiver.packet_rate ? "" : "zero"}">${fmtNumber(receiver.packet_rate)} пак/мин</td>
+    <td class="flow ${receiver.packet_rate ? "" : "zero"}">${fmtNumber(receiver.packet_rate)} сообщ/мин</td>
     <td data-duration="${receiver.continuous_seconds}">${fmtDuration(receiver.continuous_seconds)}</td>
     <td>${fmtNumber(receiver.packets)}</td>
     <td>${fmtDuration(receiver.online_seconds)}</td>

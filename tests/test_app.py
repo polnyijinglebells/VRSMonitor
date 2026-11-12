@@ -152,6 +152,72 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(receiver["vrs_total_messages"], 1_025)
         self.assertEqual(packets, 25)
 
+    def test_webadmin_failure_does_not_turn_total_into_daily_messages(self):
+        cfg = dict(app.DEFAULT_CONFIG, offline_after_seconds=30)
+        base = 1_700_000_000
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(64,'64')").lastrowid
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+
+        with patch.object(app.time, "time", return_value=base):
+            app.record_vrs_status_failure(receiver, cfg, RuntimeError("WebAdmin запускается"))
+        with app.db() as con:
+            con.execute(
+                "INSERT INTO packet_samples(receiver_id,at,packets) VALUES(?,?,?)",
+                (rid, base + 1, 1_023_291),
+            )
+
+        first_status = {
+            "id": 64, "name": "64", "connection": 2,
+            "connection_status": "Установлено", "messages": 1_023_291,
+        }
+        with patch.object(app, "request_json", return_value={"acList": []}), \
+             patch.object(app, "send_notification"), \
+             patch.object(app.time, "time", return_value=base + 15):
+            with app.db() as con:
+                receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+            app.poll_receiver(receiver, cfg, first_status)
+
+        with app.db() as con:
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+            observed = datetime.fromtimestamp(base + 15).astimezone()
+            shift_date = (observed if observed.hour >= cfg["shift_hour"] else observed - app.timedelta(days=1)).date().isoformat()
+            daily = con.execute(
+                "SELECT messages FROM daily_message_totals WHERE receiver_id=? AND shift_date=?",
+                (rid, shift_date),
+            ).fetchone()["messages"]
+        self.assertEqual(receiver["vrs_total_messages"], 1_023_291)
+        self.assertEqual(receiver["vrs_counter_initialized"], 1)
+        self.assertEqual(daily, 0)
+
+    def test_vrs_counter_reset_keeps_saved_total_and_daily_data(self):
+        cfg = dict(app.DEFAULT_CONFIG)
+        base = 1_700_000_000
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(64,'64')").lastrowid
+
+        status = {
+            "id": 64, "name": "64", "connection": 2,
+            "connection_status": "Установлено", "messages": 1_000,
+        }
+        with patch.object(app, "request_json", return_value={"acList": []}), \
+             patch.object(app, "send_notification"):
+            for offset, raw_messages in ((0, 1_000), (15, 1_025), (30, 7), (45, 12)):
+                status["messages"] = raw_messages
+                with patch.object(app.time, "time", return_value=base + offset):
+                    with app.db() as con:
+                        receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                    app.poll_receiver(receiver, cfg, status)
+
+        with app.db() as con:
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+            daily = con.execute(
+                "SELECT messages FROM daily_message_totals WHERE receiver_id=?", (rid,)
+            ).fetchone()["messages"]
+        self.assertEqual(receiver["vrs_last_raw_messages"], 12)
+        self.assertEqual(receiver["vrs_total_messages"], 1_037)
+        self.assertEqual(daily, 37)
+
     def test_dashboard_reports_last_minute_packet_rate(self):
         with app.db() as con:
             rid = con.execute(
@@ -202,6 +268,17 @@ class MonitorTests(unittest.TestCase):
         context = app.telegram_ssl_context()
         self.assertEqual(context.verify_mode, app.ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
+
+    def test_vrs_credentials_persist_in_config_file(self):
+        old_config_path = app.CONFIG_PATH
+        app.CONFIG_PATH = Path(self.tmp.name) / "config.json"
+        try:
+            app.save_config({"vrs_username": "admin", "vrs_password": "secret-password"})
+            loaded = app.load_config()
+        finally:
+            app.CONFIG_PATH = old_config_path
+        self.assertEqual(loaded["vrs_username"], "admin")
+        self.assertEqual(loaded["vrs_password"], "secret-password")
 
     def test_self_signed_mode_is_explicit_and_scoped(self):
         app._telegram_ssl_contexts.clear()

@@ -129,7 +129,9 @@ def init_db() -> None:
                 last_packet_at INTEGER,
                 total_packets INTEGER NOT NULL DEFAULT 0,
                 vrs_total_messages INTEGER NOT NULL DEFAULT 0,
+                vrs_last_raw_messages INTEGER,
                 vrs_connection_status TEXT,
+                vrs_counter_initialized INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
                 counters_json TEXT NOT NULL DEFAULT '{}'
             );
@@ -151,6 +153,12 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS ix_samples_receiver_at
                 ON packet_samples(receiver_id, at);
+            CREATE TABLE IF NOT EXISTS daily_message_totals (
+                receiver_id INTEGER NOT NULL REFERENCES receivers(id),
+                shift_date TEXT NOT NULL,
+                messages INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(receiver_id, shift_date)
+            );
             CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY,
                 receiver_id INTEGER REFERENCES receivers(id),
@@ -194,8 +202,12 @@ def init_db() -> None:
         receiver_columns = {row["name"] for row in con.execute("PRAGMA table_info(receivers)")}
         if "vrs_total_messages" not in receiver_columns:
             con.execute("ALTER TABLE receivers ADD COLUMN vrs_total_messages INTEGER NOT NULL DEFAULT 0")
+        if "vrs_last_raw_messages" not in receiver_columns:
+            con.execute("ALTER TABLE receivers ADD COLUMN vrs_last_raw_messages INTEGER")
         if "vrs_connection_status" not in receiver_columns:
             con.execute("ALTER TABLE receivers ADD COLUMN vrs_connection_status TEXT")
+        if "vrs_counter_initialized" not in receiver_columns:
+            con.execute("ALTER TABLE receivers ADD COLUMN vrs_counter_initialized INTEGER NOT NULL DEFAULT 0")
 
 
 def request_json(url: str, cfg: dict[str, Any], payload: dict[str, Any] | None = None) -> Any:
@@ -413,24 +425,43 @@ def poll_receiver(receiver: sqlite3.Row, cfg: dict[str, Any], feed_status: dict[
             if aircraft:
                 record_military_aircraft(con, receiver["id"], aircraft, now, int(cfg["shift_hour"]))
 
-            messages_total = int(feed_status["messages"])
-            baseline_exists = fresh["vrs_connection_status"] is not None
-            previous_total = int(fresh["vrs_total_messages"] or 0)
+            raw_messages = int(feed_status["messages"])
+            baseline_exists = bool(fresh["vrs_counter_initialized"])
+            accumulated_total = int(fresh["vrs_total_messages"] or 0)
             packet_delta = 0
             if baseline_exists:
-                packet_delta = messages_total - previous_total if messages_total >= previous_total else messages_total
+                previous_raw = fresh["vrs_last_raw_messages"]
+                if previous_raw is None:
+                    # Migration from versions where vrs_total_messages held the raw VRS counter.
+                    previous_raw = accumulated_total
+                previous_raw = int(previous_raw)
+                packet_delta = raw_messages - previous_raw if raw_messages >= previous_raw else raw_messages
+                accumulated_total += packet_delta
+            else:
+                # The first VRS snapshot is the saved all-time starting point, not a daily increment.
+                accumulated_total = raw_messages
             last_packet = now if packet_delta > 0 else fresh["last_packet_at"]
             connection_status = str(feed_status["connection_status"])
             con.execute(
                 """UPDATE receivers SET last_seen=?, last_packet_at=?, total_packets=total_packets+?,
-                   vrs_total_messages=?, vrs_connection_status=?, last_error=? WHERE id=?""",
-                (now, last_packet, packet_delta, messages_total, connection_status, aircraft_error, receiver["id"]),
+                   vrs_total_messages=?, vrs_last_raw_messages=?, vrs_connection_status=?, vrs_counter_initialized=1,
+                   last_error=? WHERE id=?""",
+                (now, last_packet, packet_delta, accumulated_total, raw_messages, connection_status, aircraft_error, receiver["id"]),
             )
             if packet_delta:
                 con.execute(
                     "INSERT INTO packet_samples(receiver_id, at, packets) VALUES(?,?,?)",
                     (receiver["id"], now, packet_delta),
                 )
+            local_now = datetime.fromtimestamp(now).astimezone()
+            shift_hour = int(cfg["shift_hour"])
+            shift_day = local_now.date() if local_now.hour >= shift_hour else (local_now - timedelta(days=1)).date()
+            con.execute(
+                """INSERT INTO daily_message_totals(receiver_id,shift_date,messages) VALUES(?,?,?)
+                   ON CONFLICT(receiver_id,shift_date) DO UPDATE SET
+                   messages=daily_message_totals.messages+excluded.messages""",
+                (receiver["id"], shift_day.isoformat(), packet_delta),
+            )
 
             target = "online" if int(feed_status["connection"]) == 2 else "offline"
             reason = f"VRS: {connection_status}"
@@ -557,7 +588,9 @@ def status_at(con: sqlite3.Connection, receiver_id: int, at: int) -> str:
     return row["status"] if row else "unknown"
 
 
-def period_stats(con: sqlite3.Connection, receiver_id: int, start: int, end: int) -> dict[str, Any]:
+def period_stats(
+    con: sqlite3.Connection, receiver_id: int, start: int, end: int, shift_date: str | None = None
+) -> dict[str, Any]:
     effective_end = min(end, int(time.time()))
     state = status_at(con, receiver_id, start)
     cursor = start
@@ -575,7 +608,11 @@ def period_stats(con: sqlite3.Connection, receiver_id: int, start: int, end: int
         state, cursor = event["status"], event["at"]
     if state == "online":
         online += max(0, effective_end - cursor)
-    packets = con.execute(
+    daily_row = con.execute(
+        "SELECT messages value FROM daily_message_totals WHERE receiver_id=? AND shift_date=?",
+        (receiver_id, shift_date),
+    ).fetchone() if shift_date else None
+    packets = daily_row["value"] if daily_row is not None else con.execute(
         "SELECT COALESCE(SUM(packets),0) value FROM packet_samples WHERE receiver_id=? AND at>=? AND at<?",
         (receiver_id, start, end),
     ).fetchone()["value"]
@@ -590,7 +627,7 @@ def dashboard_payload(date_text: str | None = None) -> dict[str, Any]:
     with db() as con:
         receivers = con.execute("SELECT * FROM receivers WHERE enabled=1 ORDER BY name").fetchall()
         for receiver in receivers:
-            stats = period_stats(con, receiver["id"], start, end)
+            stats = period_stats(con, receiver["id"], start, end, label)
             packet_rate = con.execute(
                 "SELECT COALESCE(SUM(packets),0) value FROM packet_samples WHERE receiver_id=? AND at>?",
                 (receiver["id"], now - 60),
