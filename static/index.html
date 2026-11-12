@@ -56,6 +56,7 @@
             <option value="name">По названию</option>
             <option value="packet_rate">По потоку данных</option>
             <option value="packets">По пакетам за сутки</option>
+            <option value="messages_total">По сообщениям всего</option>
           </select>
         </label>
       </div>
@@ -101,7 +102,9 @@
     <form id="settingsForm">
       <div class="dialog-head"><h2>Настройки</h2><button type="button" class="icon-btn" data-close>×</button></div>
       <div class="form-grid">
-        <label class="wide">Адрес Virtual Radar Server<input name="vrs_url" placeholder="http://127.0.0.1:8080/VirtualRadar" required></label>
+        <label class="wide">Адрес Virtual Radar Server<input name="vrs_url" placeholder="http://127.0.0.1/VirtualRadar" required></label>
+        <label>Администратор VRS WebAdmin<input name="vrs_username" autocomplete="username" placeholder="admin"></label>
+        <label>Пароль VRS WebAdmin<input name="vrs_password" type="password" autocomplete="current-password"></label>
         <label>Опрос, секунд<input name="poll_seconds" type="number" min="5" required></label>
         <label>Считать отключённым через, секунд<input name="offline_after_seconds" type="number" min="10" required></label>
         <label>Начало суток, час<input name="shift_hour" type="number" min="0" max="23" required></label>

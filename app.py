@@ -36,10 +36,10 @@ DB_PATH = DATA_DIR / "vrs_monitor.db"
 LOG_PATH = DATA_DIR / "vrs_monitor.log"
 
 DEFAULT_CONFIG = {
-    "vrs_url": "http://127.0.0.1:8080/VirtualRadar",
+    "vrs_url": "http://127.0.0.1/VirtualRadar",
     "poll_seconds": 15,
     "offline_after_seconds": 90,
-    "health_mode": "messages",
+    "health_mode": "http",
     "shift_hour": 8,
     "listen_host": "0.0.0.0",
     "listen_port": 8090,
@@ -128,6 +128,8 @@ def init_db() -> None:
                 last_seen INTEGER,
                 last_packet_at INTEGER,
                 total_packets INTEGER NOT NULL DEFAULT 0,
+                vrs_total_messages INTEGER NOT NULL DEFAULT 0,
+                vrs_connection_status TEXT,
                 last_error TEXT,
                 counters_json TEXT NOT NULL DEFAULT '{}'
             );
@@ -189,6 +191,11 @@ def init_db() -> None:
             );
             """
         )
+        receiver_columns = {row["name"] for row in con.execute("PRAGMA table_info(receivers)")}
+        if "vrs_total_messages" not in receiver_columns:
+            con.execute("ALTER TABLE receivers ADD COLUMN vrs_total_messages INTEGER NOT NULL DEFAULT 0")
+        if "vrs_connection_status" not in receiver_columns:
+            con.execute("ALTER TABLE receivers ADD COLUMN vrs_connection_status TEXT")
 
 
 def request_json(url: str, cfg: dict[str, Any], payload: dict[str, Any] | None = None) -> Any:
@@ -205,35 +212,47 @@ def request_json(url: str, cfg: dict[str, Any], payload: dict[str, Any] | None =
         return json.loads(response.read().decode("utf-8-sig"))
 
 
-def discover_receivers(cfg: dict[str, Any]) -> list[sqlite3.Row]:
-    data = request_json(f'{cfg["vrs_url"]}/ServerConfig.json', cfg)
-    feeds = data.get("Receivers") or data.get("receivers") or []
+def fetch_vrs_feed_statuses(cfg: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Return the live feed counters shown on the VRS main status screen."""
+    data = request_json(f'{cfg["vrs_url"]}/WebAdmin/Index/GetState', cfg)
+    root = data.get("Response", data) if isinstance(data, dict) else {}
+    feeds = root.get("Feeds") or root.get("feeds") or []
+    result: dict[int, dict[str, Any]] = {}
+    for feed in feeds:
+        if not isinstance(feed, dict):
+            continue
+        raw_id = next(
+            (feed[key] for key in ("Id", "id", "UniqueId", "UniqueID", "uniqueId")
+             if key in feed and feed[key] is not None),
+            None,
+        )
+        if raw_id is None:
+            continue
+        try:
+            feed_id = int(raw_id)
+            connection = int(feed.get("Connection", feed.get("connection", -1)))
+            messages = int(feed.get("Msgs", feed.get("msgs", 0)) or 0)
+        except (TypeError, ValueError):
+            logging.warning("VRS вернул некорректный статус канала: %r", feed)
+            continue
+        result[feed_id] = {
+            "id": feed_id,
+            "name": str(feed.get("Name") or feed.get("name") or f"Приёмник {feed_id}"),
+            "connection": connection,
+            "connection_status": str(feed.get("ConnDesc") or feed.get("connDesc") or "Неизвестно"),
+            "messages": max(0, messages),
+        }
+    if not result:
+        raise RuntimeError("WebAdmin VRS не вернул состояния каналов")
+    return result
+
+
+def sync_receivers(feeds: list[dict[str, Any]]) -> list[sqlite3.Row]:
     with db() as con:
         known_ids: list[int] = []
         for feed in feeds:
-            if not isinstance(feed, dict):
-                logging.warning("VRS вернул некорректную запись приёмника: %r", feed)
-                continue
-            # Classic VRS serialises ServerReceiverJson as UniqueId/Name, while
-            # other releases and documentation use id/name or Id/Name.
-            raw_id = next(
-                (feed[key] for key in ("id", "Id", "UniqueId", "UniqueID", "uniqueId")
-                 if key in feed and feed[key] is not None),
-                None,
-            )
-            if raw_id is None:
-                logging.warning("Пропущена запись VRS без ID: %r", feed)
-                continue
-            try:
-                feed_id = int(raw_id)
-            except (TypeError, ValueError):
-                logging.warning("Пропущена запись VRS с неверным ID: %r", feed)
-                continue
-            raw_name = next(
-                (feed[key] for key in ("name", "Name") if key in feed and feed[key]),
-                f"Приёмник {feed_id}",
-            )
-            name = str(raw_name)
+            feed_id = int(feed["id"])
+            name = str(feed.get("name") or f"Приёмник {feed_id}")
             known_ids.append(feed_id)
             con.execute(
                 """INSERT INTO receivers(feed_id, name) VALUES(?, ?)
@@ -244,6 +263,37 @@ def discover_receivers(cfg: dict[str, Any]) -> list[sqlite3.Row]:
             marks = ",".join("?" for _ in known_ids)
             con.execute(f"UPDATE receivers SET enabled=0 WHERE feed_id NOT IN ({marks})", known_ids)
         return con.execute("SELECT * FROM receivers WHERE enabled=1 ORDER BY name").fetchall()
+
+
+def discover_receivers(cfg: dict[str, Any]) -> list[sqlite3.Row]:
+    data = request_json(f'{cfg["vrs_url"]}/ServerConfig.json', cfg)
+    feeds = data.get("Receivers") or data.get("receivers") or []
+    normalized_feeds: list[dict[str, Any]] = []
+    for feed in feeds:
+        if not isinstance(feed, dict):
+            logging.warning("VRS вернул некорректную запись приёмника: %r", feed)
+            continue
+        # Classic VRS serialises ServerReceiverJson as UniqueId/Name, while
+        # other releases and documentation use id/name or Id/Name.
+        raw_id = next(
+            (feed[key] for key in ("id", "Id", "UniqueId", "UniqueID", "uniqueId")
+             if key in feed and feed[key] is not None),
+            None,
+        )
+        if raw_id is None:
+            logging.warning("Пропущена запись VRS без ID: %r", feed)
+            continue
+        try:
+            feed_id = int(raw_id)
+        except (TypeError, ValueError):
+            logging.warning("Пропущена запись VRS с неверным ID: %r", feed)
+            continue
+        raw_name = next(
+            (feed[key] for key in ("name", "Name") if key in feed and feed[key]),
+            f"Приёмник {feed_id}",
+        )
+        normalized_feeds.append({"id": feed_id, "name": str(raw_name)})
+    return sync_receivers(normalized_feeds)
 
 
 def set_status(con: sqlite3.Connection, receiver: sqlite3.Row, status: str, now: int, reason: str) -> bool:
@@ -345,9 +395,54 @@ def send_notification(receiver_id: int, receiver_name: str, status: str, reason:
             )
 
 
-def poll_receiver(receiver: sqlite3.Row, cfg: dict[str, Any]) -> None:
+def poll_receiver(receiver: sqlite3.Row, cfg: dict[str, Any], feed_status: dict[str, Any] | None = None) -> None:
     now = int(time.time())
     changed: tuple[str, str] | None = None
+    if feed_status is not None:
+        aircraft: list[dict[str, Any]] = []
+        aircraft_error: str | None = None
+        try:
+            data = request_json(f'{cfg["vrs_url"]}/AircraftList.json?feed={receiver["feed_id"]}', cfg)
+            aircraft = data.get("acList") or []
+        except Exception as exc:
+            aircraft_error = f"Список самолётов VRS недоступен: {exc}"[:500]
+            logging.warning("Не удалось получить список самолётов %s: %s", receiver["name"], exc)
+
+        with db() as con:
+            fresh = con.execute("SELECT * FROM receivers WHERE id=?", (receiver["id"],)).fetchone()
+            if aircraft:
+                record_military_aircraft(con, receiver["id"], aircraft, now, int(cfg["shift_hour"]))
+
+            messages_total = int(feed_status["messages"])
+            baseline_exists = fresh["vrs_connection_status"] is not None
+            previous_total = int(fresh["vrs_total_messages"] or 0)
+            packet_delta = 0
+            if baseline_exists:
+                packet_delta = messages_total - previous_total if messages_total >= previous_total else messages_total
+            last_packet = now if packet_delta > 0 else fresh["last_packet_at"]
+            connection_status = str(feed_status["connection_status"])
+            con.execute(
+                """UPDATE receivers SET last_seen=?, last_packet_at=?, total_packets=total_packets+?,
+                   vrs_total_messages=?, vrs_connection_status=?, last_error=? WHERE id=?""",
+                (now, last_packet, packet_delta, messages_total, connection_status, aircraft_error, receiver["id"]),
+            )
+            if packet_delta:
+                con.execute(
+                    "INSERT INTO packet_samples(receiver_id, at, packets) VALUES(?,?,?)",
+                    (receiver["id"], now, packet_delta),
+                )
+
+            target = "online" if int(feed_status["connection"]) == 2 else "offline"
+            reason = f"VRS: {connection_status}"
+            if set_status(con, fresh, target, now, reason):
+                if not (fresh["status"] == "unknown" and target == "online"):
+                    changed = (target, reason)
+            if target == "online" and aircraft_error:
+                con.execute("UPDATE receivers SET last_error=? WHERE id=?", (aircraft_error, receiver["id"]))
+        if changed:
+            send_notification(receiver["id"], receiver["name"], changed[0], changed[1], cfg)
+        return
+
     try:
         url = f'{cfg["vrs_url"]}/AircraftList.json?feed={receiver["feed_id"]}'
         data = request_json(url, cfg)
@@ -399,22 +494,44 @@ def poll_receiver(receiver: sqlite3.Row, cfg: dict[str, Any]) -> None:
         send_notification(receiver["id"], receiver["name"], changed[0], changed[1], cfg)
 
 
+def record_vrs_status_failure(receiver: sqlite3.Row, cfg: dict[str, Any], exc: Exception) -> None:
+    now = int(time.time())
+    error = f"Не удалось получить состояние каналов VRS WebAdmin: {exc}"[:500]
+    changed: tuple[str, str] | None = None
+    with db() as con:
+        fresh = con.execute("SELECT * FROM receivers WHERE id=?", (receiver["id"],)).fetchone()
+        con.execute(
+            "UPDATE receivers SET vrs_connection_status=?, last_error=? WHERE id=?",
+            ("Недоступно", error, receiver["id"]),
+        )
+        reference = fresh["last_seen"] or fresh["status_since"] or now
+        if now - reference >= int(cfg["offline_after_seconds"]):
+            if set_status(con, fresh, "offline", now, error):
+                changed = ("offline", error)
+    if changed:
+        send_notification(receiver["id"], receiver["name"], changed[0], changed[1], cfg)
+
+
 def monitor_loop() -> None:
     while not stop_event.is_set():
         cfg = load_config()
         try:
-            receivers = discover_receivers(cfg)
+            feed_statuses = fetch_vrs_feed_statuses(cfg)
+            receivers = sync_receivers(list(feed_statuses.values()))
             for receiver in receivers:
                 if stop_event.is_set():
                     break
-                poll_receiver(receiver, cfg)
+                poll_receiver(receiver, cfg, feed_statuses.get(receiver["feed_id"]))
         except Exception as exc:
-            logging.warning("VRS недоступен при получении списка приёмников: %s", exc)
-            # Existing receivers still need to transition to offline.
-            with db() as con:
-                receivers = con.execute("SELECT * FROM receivers WHERE enabled=1").fetchall()
+            logging.warning("Не удалось получить состояния каналов VRS WebAdmin: %s", exc)
+            try:
+                receivers = discover_receivers(cfg)
+            except Exception as discover_exc:
+                logging.warning("VRS недоступен при получении списка приёмников: %s", discover_exc)
+                with db() as con:
+                    receivers = con.execute("SELECT * FROM receivers WHERE enabled=1").fetchall()
             for receiver in receivers:
-                poll_receiver(receiver, cfg)
+                record_vrs_status_failure(receiver, cfg, exc)
         maybe_send_scheduled_military_report(cfg)
         poll_now.wait(int(cfg["poll_seconds"]))
         poll_now.clear()
@@ -481,6 +598,8 @@ def dashboard_payload(date_text: str | None = None) -> dict[str, Any]:
             result.append({
                 "id": receiver["id"], "feed_id": receiver["feed_id"], "name": receiver["name"],
                 "status": receiver["status"], "status_since": receiver["status_since"],
+                "vrs_connection_status": receiver["vrs_connection_status"],
+                "vrs_messages_total": receiver["vrs_total_messages"],
                 "last_seen": receiver["last_seen"], "last_packet_at": receiver["last_packet_at"],
                 "last_error": receiver["last_error"], "continuous_seconds": max(0, now - receiver["status_since"]) if receiver["status_since"] else 0,
                 "packet_rate": packet_rate,
@@ -687,11 +806,11 @@ def report_csv(date_text: str | None) -> tuple[str, bytes]:
     writer = csv.writer(stream, delimiter=";")
     hour = int(data["shift_hour"])
     writer.writerow(["Отчёт VRS", f'{data["shift_date"]} {hour:02d}:00 — следующие сутки {hour:02d}:00'])
-    writer.writerow(["Приёмник", "Состояние", "Время работы, ч", "Простои", "Пакеты", "Последний пакет", "Ошибка"])
+    writer.writerow(["Приёмник", "Состояние подключения VRS", "Сообщений всего VRS", "Время работы, ч", "Простои", "Сообщений за сутки", "Последнее сообщение", "Ошибка"])
     for item in data["receivers"]:
         last = datetime.fromtimestamp(item["last_packet_at"]).astimezone().strftime("%d.%m.%Y %H:%M:%S") if item["last_packet_at"] else "—"
         writer.writerow([
-            item["name"], "Работает" if item["status"] == "online" else "Отключён",
+            item["name"], item["vrs_connection_status"] or "Неизвестно", item["vrs_messages_total"],
             f'{item["online_seconds"] / 3600:.2f}'.replace(".", ","), item["outages"],
             item["packets"], last, item["last_error"] or "",
         ])

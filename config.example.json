@@ -1,8 +1,8 @@
 {
-  "vrs_url": "http://127.0.0.1:8080/VirtualRadar",
+  "vrs_url": "http://127.0.0.1/VirtualRadar",
   "poll_seconds": 15,
   "offline_after_seconds": 90,
-  "health_mode": "messages",
+  "health_mode": "http",
   "shift_hour": 8,
   "listen_host": "0.0.0.0",
   "listen_port": 8090,

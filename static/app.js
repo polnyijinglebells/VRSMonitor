@@ -95,6 +95,7 @@ function visibleReceivers() {
     if (sortMode === "offline_first") return statusRank[b.status] - statusRank[a.status] || a.name.localeCompare(b.name, "ru");
     if (sortMode === "packet_rate") return b.packet_rate - a.packet_rate || a.name.localeCompare(b.name, "ru");
     if (sortMode === "packets") return b.packets - a.packets || a.name.localeCompare(b.name, "ru");
+    if (sortMode === "messages_total") return b.vrs_messages_total - a.vrs_messages_total || a.name.localeCompare(b.name, "ru");
     return a.name.localeCompare(b.name, "ru");
   });
 }
@@ -103,10 +104,11 @@ function renderCard(receiver) {
   const durationLabel = receiver.status === "online" ? "Непрерывно работает" : receiver.status === "offline" ? "Отключён уже" : "Состояние уточняется";
   const error = receiver.last_error ? `<p class="card-error" title="${escapeHtml(receiver.last_error)}">${escapeHtml(receiver.last_error)}</p>` : "";
   return `<article class="receiver-card ${receiver.status}">
-    <div class="card-head"><div class="identity"><i class="status-dot"></i><div><h3>${escapeHtml(receiver.name)}</h3><span class="status-text">${statusTitle(receiver.status)}</span></div></div><span class="feed-id">FEED ${receiver.feed_id}</span></div>
+    <div class="card-head"><div class="identity"><i class="status-dot"></i><div><h3>${escapeHtml(receiver.name)}</h3><span class="status-text">${escapeHtml(receiver.vrs_connection_status || statusTitle(receiver.status))}</span></div></div><span class="feed-id">FEED ${receiver.feed_id}</span></div>
     <div class="duration"><span>${durationLabel}</span><strong data-duration="${receiver.continuous_seconds}">${fmtDuration(receiver.continuous_seconds)}</strong></div>
     <div class="metrics">
       <div class="metric flow-metric"><span>Поток данных</span><strong>${fmtNumber(receiver.packet_rate)} пак/мин</strong></div>
+      <div class="metric"><span>Сообщений всего VRS</span><strong>${fmtNumber(receiver.vrs_messages_total)}</strong></div>
       <div class="metric"><span>Пакетов за сутки</span><strong>${fmtNumber(receiver.packets)}</strong></div>
       <div class="metric"><span>Работа за сутки</span><strong>${fmtDuration(receiver.online_seconds)}</strong></div>
       <div class="metric"><span>Отключений</span><strong>${receiver.outages}</strong></div>
@@ -117,8 +119,9 @@ function renderCard(receiver) {
 
 function renderTable(receivers) {
   const rows = receivers.map(receiver => `<tr class="${receiver.status}">
-    <td class="state-cell"><i class="status-dot"></i>${statusTitle(receiver.status)}</td>
+    <td class="state-cell"><i class="status-dot"></i>${escapeHtml(receiver.vrs_connection_status || statusTitle(receiver.status))}</td>
     <td><span class="receiver-name">${escapeHtml(receiver.name)}</span><br><span class="feed-id">FEED ${receiver.feed_id}</span></td>
+    <td>${fmtNumber(receiver.vrs_messages_total)}</td>
     <td class="flow ${receiver.packet_rate ? "" : "zero"}">${fmtNumber(receiver.packet_rate)} пак/мин</td>
     <td data-duration="${receiver.continuous_seconds}">${fmtDuration(receiver.continuous_seconds)}</td>
     <td>${fmtNumber(receiver.packets)}</td>
@@ -128,7 +131,7 @@ function renderTable(receivers) {
     <td class="error-cell" title="${escapeHtml(receiver.last_error || "")}">${escapeHtml(receiver.last_error || "—")}</td>
   </tr>`).join("");
   return `<div class="receiver-table-wrap"><table class="receiver-table">
-    <thead><tr><th>Состояние</th><th>Приёмник</th><th>Поток данных</th><th>Непрерывно</th><th>Пакетов за сутки</th><th>Работа за сутки</th><th>Отключений</th><th>Последний пакет</th><th>Ошибка</th></tr></thead>
+    <thead><tr><th>Состояние подключения</th><th>Приёмник</th><th>Сообщений всего</th><th>Поток данных</th><th>Непрерывно</th><th>Сообщений за сутки</th><th>Работа за сутки</th><th>Отключений</th><th>Последнее сообщение</th><th>Ошибка</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }

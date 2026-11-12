@@ -44,7 +44,7 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(stats["packets"], 42)
 
     def test_receiver_packet_delta_and_offline_transition(self):
-        cfg = dict(app.DEFAULT_CONFIG, offline_after_seconds=30)
+        cfg = dict(app.DEFAULT_CONFIG, health_mode="messages", offline_after_seconds=30)
         base = 1_700_000_000
         snapshots = [
             {"acList": [{"Icao": "ABC123", "CMsgs": 10}]},
@@ -75,6 +75,27 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(receiver["status"], "offline")
         self.assertEqual(packets, 5)
 
+    def test_http_health_mode_stays_online_without_aircraft_messages(self):
+        cfg = dict(app.DEFAULT_CONFIG, health_mode="http", offline_after_seconds=30)
+        base = 1_700_000_000
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(1,'A')").lastrowid
+
+        with patch.object(app, "request_json", return_value={"acList": []}), \
+             patch.object(app, "send_notification"):
+            with patch.object(app.time, "time", return_value=base):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg)
+            with patch.object(app.time, "time", return_value=base + 60):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg)
+
+        with app.db() as con:
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+        self.assertEqual(receiver["status"], "online")
+
     def test_discovery_supports_classic_vrs_unique_id(self):
         payload = {
             "Receivers": [
@@ -88,6 +109,48 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual([(row["feed_id"], row["name"]) for row in receivers], [
             (7, "Основной"), (8, "Резервный")
         ])
+
+    def test_webadmin_feed_statuses_are_parsed(self):
+        payload = {"Response": {"Feeds": [{
+            "Id": 64, "Name": "64", "Connection": 2,
+            "ConnDesc": "Установлено", "Msgs": 1_023_291,
+        }]}}
+        with patch.object(app, "request_json", return_value=payload):
+            statuses = app.fetch_vrs_feed_statuses(dict(app.DEFAULT_CONFIG))
+        self.assertEqual(statuses[64], {
+            "id": 64, "name": "64", "connection": 2,
+            "connection_status": "Установлено", "messages": 1_023_291,
+        })
+
+    def test_webadmin_status_and_total_messages_drive_receiver(self):
+        cfg = dict(app.DEFAULT_CONFIG)
+        base = 1_700_000_000
+        with app.db() as con:
+            rid = con.execute("INSERT INTO receivers(feed_id,name) VALUES(64,'64')").lastrowid
+
+        connected = {
+            "id": 64, "name": "64", "connection": 2,
+            "connection_status": "Установлено", "messages": 1_000,
+        }
+        with patch.object(app, "request_json", return_value={"acList": []}), \
+             patch.object(app, "send_notification"):
+            with patch.object(app.time, "time", return_value=base):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg, connected)
+            connected["messages"] = 1_025
+            with patch.object(app.time, "time", return_value=base + 15):
+                with app.db() as con:
+                    receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+                app.poll_receiver(receiver, cfg, connected)
+
+        with app.db() as con:
+            receiver = con.execute("SELECT * FROM receivers WHERE id=?", (rid,)).fetchone()
+            packets = con.execute("SELECT COALESCE(SUM(packets),0) n FROM packet_samples WHERE receiver_id=?", (rid,)).fetchone()["n"]
+        self.assertEqual(receiver["status"], "online")
+        self.assertEqual(receiver["vrs_connection_status"], "Установлено")
+        self.assertEqual(receiver["vrs_total_messages"], 1_025)
+        self.assertEqual(packets, 25)
 
     def test_dashboard_reports_last_minute_packet_rate(self):
         with app.db() as con:
